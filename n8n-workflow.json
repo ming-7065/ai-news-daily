@@ -1,0 +1,189 @@
+{
+  "name": "AI Daily 新聞自動發布",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {"interval": [{"triggerAtHour": 8}]}
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "id": "schedule-trigger",
+      "name": "每天 8:00 執行"
+    },
+    {
+      "parameters": {
+        "url": "https://github-trending-api.now.sh/",
+        "options": {"response": {"response": {"responseFormat": "json"}}}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "id": "github-trending",
+      "name": "GitHub Trending",
+      "notes": "抓 GitHub 熱門 AI/Web3 專案"
+    },
+    {
+      "parameters": {
+        "url": "https://hacker-news.firebaseio.com/v0/topstories.json",
+        "options": {"response": {"response": {"responseFormat": "json"}}}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "id": "hn-top",
+      "name": "Hacker News Top Stories",
+      "notes": "抓 HN 前 20 熱門"
+    },
+    {
+      "parameters": {
+        "operation": "slice",
+        "sliceSize": 20
+      },
+      "type": "n8n-nodes-base.slice",
+      "typeVersion": 1,
+      "id": "slice-hn",
+      "name": "取前20篇"
+    },
+    {
+      "parameters": {
+        "functionCode": "// 取得 HN 故事內容\nconst storyIds = $input.first().json;\nconst items = [];\n\nfor (let i = 0; i < Math.min(storyIds.length, 15); i++) {\n  const id = storyIds[i];\n  const url = `https://hacker-news.firebaseio.com/v0/item/${id}.json`;\n  items.push({url, id});\n}\n\nreturn items.map(item => ({json: {url: item.url}}));"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "id": "get-hn-stories",
+      "name": "取得 HN 故事內容"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {"response": {"response": {"responseFormat": "json"}}}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "id": "fetch-hn-item",
+      "name": "Fetch HN Story"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "你是一個專業的 AI 新聞編輯。請根據以下新聞資料，用繁體中文產生：\n1. 一句 15-25 字的吸引人標題\n2. 兩句中文摘要說明\n3. 評分 1-10（10分最熱門）\n4. 標籤（最多3個，用 AI/科技/開發/工具 等分類）\n\n格式嚴格輸出 JSON：\n{\"title\":\"...\",\"summary\":\"...\",\"score\":8,\"tags\":[\"AI\",\"開發\"]}"
+            },
+            {
+              "role": "user",
+              "content": "請處理這則新聞：\n標題：{{ $json.title }}\n連結：{{ $json.url }}\n類型：Hacker News 熱門"
+            }
+          ]
+        },
+        "options": {"response": {"responseFormat": "json"}}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "id": "llm-process",
+      "name": "LLM 摘要處理"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 合併 GitHub Trending + HN 結果\nconst githubData = $('GitHub Trending').all()[0].json;\nconst hnData = $('LLM 摘要處理').all();\n\nconst githubNews = (Array.isArray(githubData) ? githubData : githubData.repos || [])\n  .slice(0, 10)\n  .map(r => ({\n    title: r.name,\n    summary: r.description || '無描述',\n    url: r.url || r.html_url,\n    source: 'GitHub',\n    score: Math.min(Math.floor((r.stars || 0) / 100), 10),\n    tags: (r.language ? [r.language] : []).concat(['開源', '熱門'])\n  }));\n\nconst hnNews = hnData.map(d => d.json).filter(j => j && j.title);\n\nreturn [{json: {news: [...githubNews, ...hnNews]}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "id": "merge-news",
+      "name": "合併新聞資料"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 統計熱門關鍵詞\nconst newsData = $input.first().json.news;\nconst keywordCount = {};\n\nnewsData.forEach(item => {\n  const words = (item.title + ' ' + item.summary).split(/[\\s\\-,;:]/);\n  words.forEach(w => {\n    if (w.length > 3 && !['https', 'http', 'github', 'com'].includes(w.toLowerCase())) {\n      keywordCount[w] = (keywordCount[w] || 0) + 1;\n    }\n  });\n});\n\nconst topKeywords = Object.entries(keywordCount)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 10)\n  .map(([word, count]) => ({word, count}));\n\nreturn [{json: {trending: topKeywords}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "id": "trending-keywords",
+      "name": "統計熱搜關鍵詞"
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "filePath": "/Users/mini/ai-news-daily/template.html"
+      },
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "id": "read-template",
+      "name": "讀取 HTML 範本"
+    },
+    {
+      "parameters": {
+        "jsCode": "const news = $('合併新聞資料').first().json.news;\nconst trending = $('統計熱搜關鍵詞').first().json.trending;\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('zh-TW', {year: 'numeric', month: 'long', day: 'numeric'});\nconst dateFile = now.toISOString().split('T')[0];\n\n// 生成一句話總結\nconst top3 = news.slice(0, 3);\nconst summary = `今日焦點：${top3.map(n => n.title).join('、')}。` +\n  `共收錄 ${news.length} 篇 AI 與科技圈熱門資訊。`;\n\n// 生成熱搜 HTML\nconst trendingHtml = trending.map(t => \n  `<div class=\"trending-item\"><div class=\"count\">${t.count}</div><div class=\"tag\">${t.word}</div></div>`\n).join('');\n\n// 分類新聞\nconst aiNews = news.filter(n => n.tags?.some(t => ['AI', '人工智慧'].includes(t)));\nconst toolNews = news.filter(n => n.tags?.some(t => ['工具', '開發', '開源'].includes(t)));\n\nfunction renderNews(newsList) {\n  return newsList.map(n => `\n    <div class=\"news-item\">\n      <span class=\"score\">${n.score || 5}分</span>\n      <h3><a href=\"${n.url}\" target=\"_blank\">${n.title}</a></h3>\n      <p class=\"desc\">${n.summary}</p>\n      <div class=\"meta\">\n        <span>📍 ${n.source || '資訊'}</span>\n      </div>\n      <div class=\"tags\">\n        ${(n.tags || []).map(t => `<span class=\"tag\">${t}</span>`).join('')}\n      </div>\n    </div>\n  `).join('');\n}\n\nconst html = `<!DOCTYPE html>\n<html lang=\"zh-TW\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>🤖 AI Daily - ${dateStr}</title>\n    <style>${require('fs').readFileSync('/Users/mini/ai-news-daily/style.css', 'utf8')}</style>\n</head>\n<body>\n    <div class=\"container\">\n        <header class=\"header\">\n            <div class=\"emoji\">🤖</div>\n            <h1>AI Daily</h1>\n            <p class=\"subtitle\">每天早 8 點，5 分鐘看懂 AI 與科技圈</p>\n            <p class=\"date\">更新於 ${dateStr} · 收錄 ${news.length} 篇</p>\n        </header>\n        \n        <div class=\"summary\">\n            <h2>📌 今日總結</h2>\n            <p>${summary}</p>\n        </div>\n        \n        <div class=\"trending\">\n            <h2>🔥 今日熱搜</h2>\n            <div class=\"trending-grid\">${trendingHtml}</div>\n        </div>\n        \n        <div class=\"news-section\">\n            <h2 class=\"section-title\">頭條 · AI 前線</h2>\n            ${renderNews(aiNews.slice(0, 5))}\n        </div>\n        \n        <div class=\"news-section\" style=\"margin-top: 40px;\">\n            <h2 class=\"section-title\">🛠️ 工具 · 開發</h2>\n            ${renderNews(toolNews.slice(0, 5))}\n        </div>\n        \n        <footer class=\"footer\">\n            <p>由 AI 自動生成 · <a href=\"https://github.com/ming-7065/ai-news-daily\">GitHub</a></p>\n            <p style=\"margin-top: 10px;\"><a href=\"archive.html\">📁 過刊列表</a></p>\n        </footer>\n    </div>\n</body>\n</html>`;\n\nconst archiveHtml = `<!DOCTYPE html>\n<html lang=\"zh-TW\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>🤖 AI Daily - ${dateStr}</title>\n    <style>${require('fs').readFileSync('/Users/mini/ai-news-daily/style.css', 'utf8')}</style>\n</head>\n<body>\n    <div class=\"container\">\n        <header class=\"header\">\n            <div class=\"emoji\">🤖</div>\n            <h1>AI Daily</h1>\n            <p class=\"subtitle\">${dateStr} 完整新聞</p>\n            <p class=\"date\">共 ${news.length} 篇</p>\n        </header>\n        \n        <div class=\"news-section\">\n            ${renderNews(news)}\n        </div>\n        \n        <footer class=\"footer\">\n            <p><a href=\"index.html\">← 返回首頁</a> · <a href=\"https://github.com/ming-7065/ai-news-daily\">GitHub</a></p>\n        </footer>\n    </div>\n</body>\n</html>`;\n\nreturn [{json: {indexHtml: html, archiveHtml, dateFile, dateStr, newsCount: news.length}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "id": "generate-html",
+      "name": "生成 HTML 內容"
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.indexHtml }}"
+      },
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "id": "write-index",
+      "name": "寫入 index.html",
+      "notes": "寫入主頁 HTML"
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.archiveHtml }}"
+      },
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "id": "write-archive",
+      "name": "寫入 archive/日期.html"
+    },
+    {
+      "parameters": {
+        "command": "cd /Users/mini/ai-news-daily && git add . && git commit -m \"Daily update: {{ $('生成 HTML 內容').first().json.dateFile }}\" && git push origin main"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "id": "git-push",
+      "name": "Commit 到 GitHub",
+      "notes": "自動 commit 並觸發 Vercel 部署"
+    }
+  ],
+  "connections": {
+    "每天 8:00 執行": {
+      "main": [["GitHub Trending"], ["Hacker News Top Stories"]]
+    },
+    "GitHub Trending": {
+      "main": [["合併新聞資料"]]
+    },
+    "Hacker News Top Stories": {
+      "main": [["取前20篇"]]
+    },
+    "取前20篇": {
+      "main": [["取得 HN 故事內容"]]
+    },
+    "取得 HN 故事內容": {
+      "main": [["Fetch HN Story"]]
+    },
+    "Fetch HN Story": {
+      "main": [["LLM 摘要處理"]]
+    },
+    "LLM 摘要處理": {
+      "main": [["合併新聞資料"]]
+    },
+    "合併新聞資料": {
+      "main": [["統計熱搜關鍵詞"], ["生成 HTML 內容"]]
+    },
+    "統計熱搜關鍵詞": {
+      "main": [["生成 HTML 內容"]]
+    },
+    "讀取 HTML 範本": {
+      "main": [["生成 HTML 內容"]]
+    },
+    "生成 HTML 內容": {
+      "main": [["Commit 到 GitHub"]]
+    }
+  }
+}
