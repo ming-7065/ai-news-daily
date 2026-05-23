@@ -1,0 +1,205 @@
+{
+ "name": "AI Daily 新聞自動發布",
+ "nodes": [
+  {
+   "parameters": {"rule": {"interval": [{"triggerAtHour": 8}]}},
+   "id": "11111111-1111-1111-1111-111111111111",
+   "name": "每天8點",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [-1920, 400]
+  },
+  {
+   "parameters": {
+    "url": "https://api.github.com/search/repositories?q=AI+OR+javascript+created:>2026-05-22&sort=stars&order=desc&per_page=10",
+    "options": {"response": {"response": {"responseFormat": "json"}}}
+   },
+   "id": "22222222-2222-2222-2222-222222222222",
+   "name": "GitHub搜尋",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [-1680, 240],
+   "retryOnFail": true,
+   "waitBetweenTries": 5000
+  },
+  {
+   "parameters": {
+    "url": "https://hacker-news.firebaseio.com/v0/topstories.json",
+    "options": {"response": {"response": {"responseFormat": "json"}}}
+   },
+   "id": "33333333-3333-3333-3333-333333333333",
+   "name": "HN Top",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [-1680, 560],
+   "retryOnFail": true,
+   "waitBetweenTries": 5000
+  },
+  {
+   "parameters": {"fieldToSplitOut": "items", "options": {}},
+   "id": "44444444-4444-4444-4444-444444444444",
+   "name": "Split GH",
+   "type": "n8n-nodes-base.splitOut",
+   "typeVersion": 1,
+   "position": [-1440, 240]
+  },
+  {
+   "parameters": {"operation": "limit", "limit": 10},
+   "id": "55555555-5555-5555-5555-555555555555",
+   "name": "Limit HN",
+   "type": "n8n-nodes-base.limit",
+   "typeVersion": 1,
+   "position": [-1440, 560]
+  },
+  {
+   "parameters": {
+    "jsCode": "// 取得 HN ID 清單後 fetch 各篇內容\nconst ids = $input.first().json;\nreturn ids.slice(0, 10).map(id => ({json: {url: `https://hacker-news.firebaseio.com/v0/item/${id}.json`}}));"
+   },
+   "id": "66666666-6666-6666-6666-666666666666",
+   "name": "取得HN URL",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [-1200, 560]
+  },
+  {
+   "parameters": {
+    "url": "={{ $json.url }}",
+    "options": {"response": {"response": {"responseFormat": "json"}}}
+   },
+   "id": "77777777-7777-7777-7777-777777777777",
+   "name": "Fetch HN Story",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [-960, 560],
+   "retryOnFail": true,
+   "waitBetweenTries": 5000
+  },
+  {
+   "parameters": {"mode": "exactly", "max": 10, "reset": false, "options": {}},
+   "id": "88888888-8888-8888-8888-888888888888",
+   "name": "Loop HN",
+   "type": "n8n-nodes-base.splitInBatches",
+   "typeVersion": 3,
+   "position": [-720, 560]
+  },
+  {
+   "parameters": {
+    "jsCode": "// 取標題後用 MiniMax 做摘要\nconst item = $input.first().json;\nconst title = item.title || '無標題';\nconst url = item.url || `https://news.ycombinator.com/item?id=${item.id}`;\nreturn [{json: {\n  title: title,\n  summary: item.text ? item.text.substring(0, 150) : item.title,\n  url: url,\n  source: 'Hacker News',\n  score: item.score ? Math.min(Math.floor(item.score / 10), 10) : 5,\n  tags: ['科技', '討論']\n}}];"
+   },
+   "id": "99999999-9999-9999-9999-999999999999",
+   "name": "LLM處理HN",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [-480, 560]
+  },
+  {
+   "parameters": {
+    "jsCode": "// 合併 GitHub 和 HN 的結果\nconst ghItems = $('Split GH').all().map(i => i.json).filter(j => j && j.full_name).map(r => ({\n  title: r.full_name || r.name,\n  summary: r.description || '無描述',\n  url: r.html_url || r.url,\n  source: 'GitHub',\n  score: Math.min(Math.floor((r.stargazers_count||0)/50), 10),\n  tags: [r.language||'開源', '熱門']\n}));\n\nconst hnItems = $('LLM處理HN').all().map(i => i.json).filter(j => j && j.title);\n\nconst allNews = [...ghItems, ...hnItems];\n\n// 統計關鍵詞\nconst kw = {};\nallNews.forEach(n => {\n  (n.title + ' ' + n.summary).split(/[\\s]+/).forEach(w => {\n    if (w.length > 3 && !['https','github','http','www','com'].includes(w.toLowerCase())) {\n      kw[w] = (kw[w]||0) + 1;\n    }\n  });\n});\n\nconst trending = Object.entries(kw).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([w,c])=>({word:w,count:c}));\n\nreturn [{json: {news: allNews, trending}}];"
+   },
+   "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+   "name": "合併新聞",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [-1200, 400]
+  },
+  {
+   "parameters": {
+    "jsCode": "// 生成 HTML\nconst {news, trending} = $input.first().json;\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('zh-TW', {year:'numeric', month:'long', day:'numeric'});\nconst dateFile = now.toISOString().split('T')[0];\nconst top3 = news.slice(0,3);\nconst summary = `今日熱點：${top3.map(n=>n.title).join('、')}。共${news.length}篇 AI 與科技圈資訊。`;\nconst th = trending.map(t => `<div class=\"trending-item\"><div class=\"count\">${t.count}</div><div class=\"tag\">${t.word}</div></div>`).join('');\n\nfunction rn(list) {\n  return list.map(n => `<div class=\"news-item\"><span class=\"score\">${n.score||5}分</span><h3><a href=\"${n.url}\" target=\"_blank\">${n.title}</a></h3><p class=\"desc\">${n.summary}</p><div class=\"meta\"><span>📍${n.source}</span></div><div class=\"tags\">${(n.tags||[]).map(t=>`<span class=\"tag\">${t}</span>`).join('')}</div></div>`).join('');\n}\n\nconst css = `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0f;color:#e5e5e5;min-height:100vh;padding:20px}.container{max-width:900px;margin:0 auto}.header{text-align:center;padding:40px 0;border-bottom:1px solid #222;margin-bottom:40px}.header h1{font-size:2.5em;margin-bottom:10px}.header .emoji{font-size:3em}.header .subtitle{color:#888;margin-bottom:20px}.header .date{color:#666;font-size:0.9em}.summary{background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:16px;padding:30px;margin-bottom:40px;border-left:4px solid #00d4ff}.summary h2{color:#00d4ff;margin-bottom:15px}.summary p{line-height:1.8;color:#ccc}.trending{margin-bottom:40px}.trending h2{color:#ff6b6b;margin-bottom:20px}.trending-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}.trending-item{background:#1a1a2e;padding:10px 15px;border-radius:8px;text-align:center}.trending-item .count{color:#00d4ff;font-size:1.2em;font-weight:bold}.trending-item .tag{color:#888}.section-title{color:#fff;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #333;font-size:1.3em}.news-item{background:#111;border-radius:12px;padding:20px;margin-bottom:20px;border:1px solid #222}.news-item .score{display:inline-block;background:#ff6b6b;color:#fff;padding:3px 10px;border-radius:20px;font-size:0.85em;font-weight:bold}.news-item h3{margin:10px 0;font-size:1.1em}.news-item h3 a{color:inherit;text-decoration:none}.news-item h3 a:hover{color:#00d4ff}.news-item .desc{color:#999;margin:10px 0;line-height:1.6}.news-item .meta{color:#666;font-size:0.85em}.news-item .tags{margin-top:10px}.news-item .tag{display:inline-block;background:#1a1a2e;color:#00d4ff;padding:3px 10px;border-radius:4px;font-size:0.8em;margin-right:5px}.footer{text-align:center;padding:40px 0;color:#666;font-size:0.85em;border-top:1px solid #222;margin-top:60px}.footer a{color:#00d4ff;text-decoration:none}@media(max-width:600px){body{padding:15px}.header h1{font-size:1.8em}}`;\n\nconst html = `<!DOCTYPE html>\n<html lang=\"zh-TW\">\n<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>AI Daily - ${dateStr}</title><style>${css}</style></head>\n<body><div class=\"container\">\n<header class=\"header\"><div class=\"emoji\">🤖</div><h1>AI Daily</h1><p class=\"subtitle\">每天早 8 點，5 分鐘看懂 AI 與科技圈</p><p class=\"date\">更新於 ${dateStr} · 收錄 ${news.length} 篇</p></header>\n<div class=\"summary\"><h2>📌 今日總結</h2><p>${summary}</p></div>\n<div class=\"trending\"><h2>🔥 今日熱搜</h2><div class=\"trending-grid\">${th}</div></div>\n<div class=\"news-section\"><h2 class=\"section-title\">頭條 · AI 前線</h2>${rn(news.slice(0,5))}</div>\n<div class=\"news-section\" style=\"margin-top:40px\"><h2 class=\"section-title\">🛠️ 工具 · 開發</h2>${rn(news.slice(5,10))}</div>\n<footer class=\"footer\"><p>由 AI 自動生成 · <a href=\"https://github.com/ming-7065/ai-news-daily\">GitHub</a></p><p style=\"margin-top:10px\"><a href=\"archive.html\">📁 過刊列表</a></p></footer>\n</div></body></html>`;\n\nconst archiveCss = `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0f;color:#e5e5e5;min-height:100vh;padding:40px 20px}.container{max-width:900px;margin:0 auto}.header{text-align:center;padding:40px 0;border-bottom:1px solid #222;margin-bottom:40px}.header h1{font-size:2em;margin-bottom:10px}.header .emoji{font-size:2.5em}.news-item{background:#111;border-radius:12px;padding:20px;margin-bottom:20px;border:1px solid #222}.news-item .score{display:inline-block;background:#ff6b6b;color:#fff;padding:3px 10px;border-radius:20px;font-size:0.85em;font-weight:bold}.news-item h3{margin:10px 0;font-size:1.1em}.news-item h3 a{color:inherit;text-decoration:none}.news-item h3 a:hover{color:#00d4ff}.news-item .desc{color:#999;margin:10px 0;line-height:1.6}.news-item .meta{color:#666;font-size:0.85em}.news-item .tags{margin-top:10px}.news-item .tag{display:inline-block;background:#1a1a2e;color:#00d4ff;padding:3px 10px;border-radius:4px;font-size:0.8em;margin-right:5px}.footer{text-align:center;padding:40px 0;color:#666;font-size:0.85em;border-top:1px solid #222;margin-top:60px}.footer a{color:#00d4ff;text-decoration:none}`;\n\nconst ah = `<!DOCTYPE html>\n<html lang=\"zh-TW\">\n<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>AI Daily - ${dateStr}</title><style>${archiveCss}</style></head>\n<body><div class=\"container\">\n<header class=\"header\"><div class=\"emoji\">🤖</div><h1>AI Daily</h1><p class=\"subtitle\">${dateStr} 完整新聞</p><p class=\"date\">共 ${news.length} 篇</p></header>\n<div class=\"news-section\">${rn(news)}</div>\n<footer class=\"footer\"><p><a href=\"index.html\">← 返回首頁</a> · <a href=\"https://github.com/ming-7065/ai-news-daily\">GitHub</a></p></footer>\n</div></body></html>`;\n\nreturn [{json: {indexHtml: html, archiveHtml: ah, dateFile, dateStr}}];"
+   },
+   "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+   "name": "生成HTML",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [0, 400]
+  },
+  {
+   "parameters": {
+    "command": "mkdir -p /Users/mini/ai-news-daily/archive && cat > /Users/mini/ai-news-daily/index.html << 'ENDOFFILE'\n{{ $json.indexHtml }}\nENDOFFILE\ncat > /Users/mini/ai-news-daily/archive/{{ $json.dateFile }}.html << 'ENDOFFILE'\n{{ $json.archiveHtml }}\nENDOFFILE"
+   },
+   "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+   "name": "寫入HTML",
+   "type": "n8n-nodes-base.executeCommand",
+   "typeVersion": 1,
+   "position": [240, 400]
+  },
+  {
+   "parameters": {
+    "command": "cd /Users/mini/ai-news-daily && git add index.html archive/*.html && git commit -m \"Auto update: {{ $json.dateFile }}\" && git push origin main"
+   },
+   "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+   "name": "GitPush",
+   "type": "n8n-nodes-base.executeCommand",
+   "typeVersion": 1,
+   "position": [480, 400],
+   "retryOnFail": true,
+   "waitBetweenTries": 5000
+  }
+ ],
+ "connections": {
+  "每天8點": {
+   "main": [
+     [{"node": "GitHub搜尋", "type": "main", "index": 0}],
+     [{"node": "HN Top", "type": "main", "index": 0}]
+   ]
+  },
+  "GitHub搜尋": {
+   "main": [
+     [{"node": "Split GH", "type": "main", "index": 0}]
+   ]
+  },
+  "Split GH": {
+   "main": [
+     [{"node": "合併新聞", "type": "main", "index": 0}]
+   ]
+  },
+  "HN Top": {
+   "main": [
+     [{"node": "Limit HN", "type": "main", "index": 0}]
+   ]
+  },
+  "Limit HN": {
+   "main": [
+     [{"node": "取得HN URL", "type": "main", "index": 0}]
+   ]
+  },
+  "取得HN URL": {
+   "main": [
+     [{"node": "Fetch HN Story", "type": "main", "index": 0}]
+   ]
+  },
+  "Fetch HN Story": {
+   "main": [
+     [{"node": "Loop HN", "type": "main", "index": 0}]
+   ]
+  },
+  "Loop HN": {
+   "main": [
+     [{"node": "LLM處理HN", "type": "main", "index": 0}]
+   ]
+  },
+  "LLM處理HN": {
+   "main": [
+     [{"node": "合併新聞", "type": "main", "index": 0}]
+   ]
+  },
+  "合併新聞": {
+   "main": [
+     [{"node": "生成HTML", "type": "main", "index": 0}]
+   ]
+  },
+  "生成HTML": {
+   "main": [
+     [{"node": "寫入HTML", "type": "main", "index": 0}]
+   ]
+  },
+  "寫入HTML": {
+   "main": [
+     [{"node": "GitPush", "type": "main", "index": 0}]
+   ]
+  }
+ },
+ "settings": {"executionOrder": "v1"},
+ "staticData": null,
+ "tags": [],
+ "versionId": "v1"
+}
